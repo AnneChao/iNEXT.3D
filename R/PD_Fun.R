@@ -1027,3 +1027,125 @@ datainf <- function(data, datatype, phylotr, reft){
 }
 
 
+
+
+# Normalized integral of mean-PD over (0, Tmax), trapezoidal quadrature (beta3D convention).
+PD_AUC_setup <- function(data, datatype, nT, PDtree, PDreftime, PDcut_number,
+                         empirical = FALSE) {
+  if (!is.numeric(PDcut_number) || length(PDcut_number) != 1L ||
+      !is.finite(PDcut_number) || PDcut_number < 3 || PDcut_number != floor(PDcut_number))
+    stop('PDcut_number must be an integer of at least 3.', call. = FALSE)
+  if (!is.null(PDreftime)) warning('PDreftime is ignored for PD AUC.', call. = FALSE)
+  if (datatype == 'incidence_freq') stop('PD requires incidence_raw or abundance.')
+  d <- check.datatype(data, datatype, nT = nT, raw.to.inci = FALSE, empirical = empirical)
+  tr <- check.tree(d[[2]], d[[1]], PDtree, NULL, d[[3]])
+  H <- tr[[1]]
+  if (!is.finite(H) || H <= 1e-4) stop('PD AUC requires pooled tree height greater than 0.0001 for beta3D-compatible integration.')
+  list(datatype = d[[1]], tree = tr[[2]], data = tr[[3]], H = H,
+       times = seq(1e-4, H, length.out=PDcut_number))
+}
+
+PD_AUC_engine <- function(setup, q, nboot, conf, sizes = NULL, levels = NULL,
+                          bridge = FALSE, methods = character()) {
+  q <- check.q(q); nboot <- check.nboot(nboot); conf <- check.conf(conf)
+  tt <- setup$times; H <- setup$H; K <- length(tt); nq <- length(q)
+  abu <- setup$datatype == 'abundance'; dt <- setup$datatype
+  z <- stats::qnorm((1 + conf)/2)
+  weights <- c(diff(tt)[1]/2, (head(diff(tt),-1)+tail(diff(tt),-1))/2, tail(diff(tt),1)/2) / sum(diff(tt))
+  all <- lapply(seq_along(setup$data), function(i) {
+    x <- setup$data[[i]]
+    if (abu) { x <- x[x > 0]; n <- sum(x) } else {
+      x <- x[rowSums(x) > 0,,drop = FALSE]; n <- ncol(x)
+    }
+    if (!length(x) || n < 1) stop('Empty assemblage in PD AUC.')
+    aL <- if (abu) phyBranchAL_Abu(setup$tree, x, dt, refT = tt) else
+      phyBranchAL_Inc(setup$tree, x, dt, refT = tt)
+    ai <- aL$treeNabu$branch.abun; L <- aL$BLbyT
+    tips <- aL$treeNabu$tgroup == 'Tip'; freq <- if (abu) x else rowSums(x)
+    cov <- function(f, m) Coverage(if (abu) f else c(n,f),
+                                    if (abu) 'abundance' else 'incidence_freq', m)
+    m <- if (!is.null(sizes)) sizes[[i]] else NULL
+    sc <- if (bridge) unique(cov(freq,m)) else levels
+    evaluate <- function(a, Li, f) {
+      keep <- a > 0; a <- a[keep]; Li <- Li[keep,,drop=FALSE]; f <- f[f>0]
+      if (!length(f)) stop('Empty bootstrap sample.')
+      out <- list()
+      if (!is.null(m)) {
+        vals <- vapply(seq_along(tt), function(j)
+          as.numeric(PhD.m.est(a,Li[,j,drop=FALSE],m,q,n,tt[j],'PD'))/tt[j],
+          numeric(nq*length(m)))
+        out$size <- as.numeric(matrix(vals,nrow=nq*length(m)) %*% weights)
+        out$sc <- cov(f,m)
+      }
+      if (!is.null(sc)) {
+        inv <- if (abu) invChatPD_abu else invChatPD_inc
+        vs <- lapply(seq_along(tt), function(j) inv(f,a,Li[,j,drop=FALSE],q,sc,n,tt[j],'PD'))
+        vals <- vapply(seq_along(tt), function(j) vs[[j]]$qPD/tt[j], numeric(nq*length(sc)))
+        out$coverage <- as.numeric(matrix(vals,nrow=nq*length(sc)) %*% weights)
+        v <- vs[[1]]
+        out$coverage_m <- v[[if (abu) 'm' else 'nT']][seq(1,nrow(v),by=nq)]
+      }
+      for (method in methods) {
+        vals <- vapply(seq_along(tt), function(j) {
+          if (method == 'Observed') {
+            as.numeric(PD.Tprofile(a,Li[,j,drop=FALSE],q,tt[j],'PD',n))/tt[j]
+          } else {
+            as.numeric(PhD.q.est(a,Li[,j,drop=FALSE],q,n,tt[j],'PD'))/tt[j]
+          }
+        }, numeric(nq))
+        out[[method]] <- as.numeric(matrix(vals,nrow=nq) %*% weights)
+      }
+      out
+    }
+    point <- evaluate(ai,L,freq)
+    if (any(!is.finite(unlist(point)))) warning('PD AUC: non-finite point estimate or target size; inspect the underlying PD estimator.', call.=FALSE)
+    boots <- list()
+    if (nboot > 1) {
+      B <- Boots.one(setup$tree,aL$treeNabu,dt,nboot,tt,L,n)
+      BL <- B$Li
+      for (j in seq_len(K)) BL[,j] <- pmin(BL[,j],tt[j])
+      colnames(BL) <- colnames(L)
+      tipB <- seq_len(sum(tips)+B$f0)
+      boots <- lapply(seq_len(ncol(B$boot_data)), function(b) {
+        a <- B$boot_data[,b]; f <- a[tipB]
+        if (!any(f>0)) return(NULL)
+        tryCatch(evaluate(a,BL,f), error=function(e) NULL)
+      })
+      boots <- Filter(Negate(is.null),boots)
+      if (length(boots) < nboot) warning('PD AUC: invalid bootstrap replicates omitted for ',names(setup$data)[i], call.=FALSE)
+    }
+    se <- function(key) {
+      if (length(boots)<2) return(rep(NA_real_,length(point[[key]])))
+      M <- do.call(cbind,lapply(boots,`[[`,key))
+      if (any(!is.finite(M))) warning('PD AUC: non-finite bootstrap estimates omitted for ' ,key, call.=FALSE)
+      apply(M,1,function(v) {v <- v[is.finite(v)]; if(length(v)>1) stats::sd(v) else NA_real_})
+    }
+    ci <- function(key) {
+      p <- point[[key]]; s <- se(key)
+      data.frame(qPD=p,s.e.=s,qPD.LCL=pmax(0,p-z*s),qPD.UCL=p+z*s)
+    }
+    nm <- names(setup$data)[i]
+    met <- function(v) ifelse(v<n,'Rarefaction',ifelse(v>n,'Extrapolation','Observed'))
+    ans <- list()
+    if (!is.null(m)) {
+      s <- se('sc'); C <- point$sc
+      ans$size_based <- cbind(data.frame(Assemblage=nm,Order.q=rep(q,length(m)),m=rep(m,each=nq),Method=rep(met(m),each=nq)),ci('size'),
+        data.frame(SC=rep(C,each=nq),SC.s.e.=rep(s,each=nq),SC.LCL=rep(pmax(0,C-z*s),each=nq),SC.UCL=rep(pmin(1,C+z*s),each=nq),Reftime=H,Type='AUC'))
+      if (!abu) names(ans$size_based)[3] <- 'mT'
+      ans$size_based <- ans$size_based[order(ans$size_based$Order.q, ans$size_based[[3]]),,drop=FALSE]
+    }
+    if (!is.null(sc)) {
+      mm <- point$coverage_m
+      cm <- met(mm)
+      cm[sc == cov(freq,n)] <- 'Observed'
+      ans$coverage_based <- cbind(data.frame(Assemblage=nm,Order.q=rep(q,length(sc)),SC=rep(sc,each=nq),m=rep(mm,each=nq),Method=rep(cm,each=nq)),ci('coverage'),data.frame(Reftime=H,Type='AUC'))
+      if (!abu) names(ans$coverage_based)[4] <- 'mT'
+      ans$coverage_based <- ans$coverage_based[order(ans$coverage_based$Order.q, ans$coverage_based$SC),,drop=FALSE]
+    }
+    if (length(methods)) ans$profile <- do.call(rbind,lapply(methods,function(method)
+      cbind(data.frame(Assemblage=nm,Order.q=q),ci(method),data.frame(Method=method,Reftime=H,Type='AUC'))))
+    ans
+  })
+  keys <- names(all[[1]])
+  setNames(lapply(keys,function(k) do.call(rbind,lapply(all,`[[`,k))),keys)
+}

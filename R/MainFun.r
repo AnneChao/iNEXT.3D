@@ -8,11 +8,13 @@
 #' @param datatype data type of input data: individual-based abundance data (\code{datatype = "abundance"}) or species by sampling-units incidence/occurrence matrix (\code{datatype = "incidence_raw"}) with all entries being 0 (non-detection) or 1 (detection).
 #' @param nT (required only when \code{datatype = "incidence_raw"} and input data in a single matrix/data.frame) a vector of positive integers specifying the number of sampling units in each assemblage. If assemblage names are not specified (i.e., \code{names(nT) = NULL}), then assemblages are automatically named as "assemblage1", "assemblage2",..., etc.
 #' @param PDtree (required argument for \code{diversity = "PD"}), a phylogenetic tree in Newick format for all observed species in the pooled assemblage. 
-#' @param PDreftime (argument only for \code{diversity = "PD"}), a vector of numerical values specifying reference times for PD. Default is \code{NULL} (i.e., the age of the root of \code{PDtree}).  
+#' @param PDreftime (argument only for \code{diversity = "PD"}), a vector of numerical values specifying reference times for PD or meanPD (ignored for AUC). Default is \code{NULL} (i.e., the age of the root of \code{PDtree}).  
+#' @param PDtype For PD, use 'AUC' (default) for basic sample information and Tmax, or 'PD'/'meanPD' for reference-time branch information.
 #' @param FDdistM (required argument for \code{diversity = "FD"}), a species pairwise distance matrix for all species in the pooled assemblage. 
 #' @param FDtype (argument only for \code{diversity = "FD"}), select FD type: \code{FDtype = "tau_values"} for FD under specified threshold values, or \code{FDtype = "AUC"} (area under the curve of tau-profile) for an overall FD which integrates all threshold values between zero and one. Default is \code{"AUC"}.  
 #' @param FDtau (argument only for \code{diversity = "FD"} and \code{FDtype = "tau_values"}), a numerical vector between 0 and 1 specifying tau values (threshold levels). If \code{NULL} (default), then threshold is set to be the mean distance between any two individuals randomly selected from the pooled assemblage (i.e., quadratic entropy). 
 #' 
+#' For PDtype = 'AUC', output includes basic sample information and Tmax (pooled tree height); otherwise meanPD.obs is PD.obs / Reftime.
 #' @return a data.frame including basic data information.\cr\cr 
 #' For abundance data, basic information shared by TD, mean-PD and FD includes assemblage name (\code{Assemblage}),
 #' sample size (\code{n}), observed species richness (\code{S.obs}), sample coverage estimates of the reference sample (\code{SC(n)}), 
@@ -96,7 +98,20 @@
 #' 
 #'
 #' @export
-DataInfo3D <- function(data, diversity = 'TD', datatype = "abundance", nT = NULL, PDtree, PDreftime = NULL, FDdistM, FDtype = "AUC", FDtau = NULL){
+DataInfo3D <- function(data, diversity = 'TD', datatype = "abundance", nT = NULL, PDtree, PDreftime = NULL, FDdistM, FDtype = "AUC", FDtau = NULL, PDtype = 'AUC'){
+  if (diversity == 'PD' && identical(PDtype, 'AUC')) {
+    st <- PD_AUC_setup(data,datatype,nT,PDtree,PDreftime,30,empirical=TRUE)
+    dat <- st$data
+    if (st$datatype == 'incidence_raw') {
+      dat <- lapply(dat, function(x) c(ncol(x), rowSums(x)))
+      info <- TDinfo(dat, 'incidence_freq')[, 1:6, drop=FALSE]
+    } else {
+      info <- TDinfo(dat, 'abundance')[, 1:5, drop=FALSE]
+    }
+    info$Tmax <- st$H
+    return(info)
+  }
+
   
   if (diversity == 'TD') {
     
@@ -131,7 +146,7 @@ DataInfo3D <- function(data, diversity = 'TD', datatype = "abundance", nT = NULL
         datainf(data = x, datatype, phylotr = mytree,reft = PDreftime) %>% mutate(Reftime = PDreftime)
       }) %>% do.call(rbind,.) %>% 
         mutate(Assemblage = rep(names(mydata), each = length(PDreftime))) %>%
-        select(Assemblage, n, S.obs, `SC(n)`, `SC(2n)`, PD.obs, `f1*`, `f2*`, g1, g2, Reftime)
+        select(Assemblage, n, S.obs, `SC(n)`, `SC(2n)`, PD.obs, `f1*`, `f2*`, g1, g2, Reftime) %>% mutate(meanPD.obs = PD.obs / Reftime, .after = PD.obs)
       
     }else if (datatype=='incidence_raw'){
       
@@ -139,7 +154,7 @@ DataInfo3D <- function(data, diversity = 'TD', datatype = "abundance", nT = NULL
         datainf(data = x, datatype, phylotr = mytree,reft = PDreftime) %>% mutate(Reftime = PDreftime)
       }) %>% do.call(rbind,.) %>% 
         mutate(Assemblage = rep(names(mydata), each = length(PDreftime))) %>%
-        select(Assemblage,`T`, U, S.obs, `SC(T)`, `SC(2T)`, PD.obs, `Q1*`, `Q2*`, R1, R2, Reftime)
+        select(Assemblage,`T`, U, S.obs, `SC(T)`, `SC(2T)`, PD.obs, `Q1*`, `Q2*`, R1, R2, Reftime) %>% mutate(meanPD.obs = PD.obs / Reftime, .after = PD.obs)
       
     }
     
@@ -301,8 +316,9 @@ NULL
 #' @param conf a positive number < 1 specifying the level of confidence interval. Default is 0.95.
 #' @param nT (required only when \code{datatype = "incidence_raw"} and input data in a single matrix/data.frame) a vector of positive integers specifying the number of sampling units in each assemblage. If assemblage names are not specified (i.e., \code{names(nT) = NULL}), then assemblages are automatically named as "assemblage1", "assemblage2",..., etc. 
 #' @param PDtree (required argument for \code{diversity = "PD"}), a phylogenetic tree in Newick format for all observed species in the pooled assemblage. 
-#' @param PDreftime (argument only for \code{diversity = "PD"}), a vector of numerical values specifying reference times for PD. Default is \code{NULL} (i.e., the age of the root of \code{PDtree}).  
-#' @param PDtype (argument only for \code{diversity = "PD"}), select PD type: \code{PDtype = "PD"} (effective total branch length) or \code{PDtype = "meanPD"} (effective number of equally divergent lineages). Default is \code{"meanPD"}, where \code{meanPD = PD/tree depth}.
+#' @param PDreftime (argument only for \code{diversity = "PD"}), a vector of numerical values specifying reference times for PD or meanPD (ignored for AUC). Default is \code{NULL} (i.e., the age of the root of \code{PDtree}).  
+#' @param PDtype (argument only for \code{diversity = "PD"}), select PD type: \code{PDtype = "PD"} (effective total branch length) or \code{PDtype = "meanPD"} (effective number of equally divergent lineages). Here \code{meanPD = PD/Reftime}. Default is \code{"AUC"}. Use \code{PDtype = 'AUC'} for the normalized integral of mean-PD from 0.0001 to the pooled tree height (approximating the interval from zero to the root age).
+#' @param PDcut_number For PDtype = 'AUC', number of equally spaced trapezoidal integration points (default 30; minimum 3).
 #' @param FDdistM (required argument for \code{diversity = "FD"}), a species pairwise distance matrix for all species in the pooled assemblage. 
 #' @param FDtype (argument only for \code{diversity = "FD"}), select FD type: \code{FDtype = "tau_values"} for FD under specified threshold values, or \code{FDtype = "AUC"} (area under the curve of tau-profile) for an overall FD which integrates all threshold values between zero and one. Default is \code{"AUC"}.  
 #' @param FDtau (argument only for \code{diversity = "FD"} and \code{FDtype = "tau_values"}), a numerical vector between 0 and 1 specifying tau values (threshold levels). If \code{NULL} (default), then threshold is set to be the mean distance between any two individuals randomly selected from the pooled assemblage (i.e., quadratic entropy). 
@@ -335,8 +351,8 @@ NULL
 #'    \item{qTD.LCL, qPD.LCL, qFD.LCL and qTD.UCL, qPD.UCL, qFD.UCL}{the bootstrap lower and upper confidence limits for the diversity of order q at the specified level (with a default value of 0.95).}
 #'    \item{SC}{the standardized coverage value.}
 #'    \item{SC.LCL, SC.UCL}{the bootstrap lower and upper confidence limits for coverage at the specified level (with a default value of 0.95).}
-#'    \item{Reftime}{the reference times for PD.}
-#'    \item{Type}{\code{"PD"} (effective total branch length) or \code{"meanPD"} (effective number of equally divergent lineages) for PD.}
+#'    \item{Reftime}{the reference times for PD when \code{PDtype = "PD"} or \code{PDtype = "meanPD"}.}
+#'    \item{Type}{\code{"PD"} (effective total branch length), \code{"meanPD"} (effective number of equally divergent lineages), or \code{"AUC"} (integrated mean phylogenetic diversity).}
 #'    \item{Tau}{the threshold of functional distinctiveness between any two species for FD (under \code{FDtype = tau_values}).}
 #'  Similar output is obtained for \code{"$coverage_based"}. \cr\cr
 #' (3) \code{$TDAsyEst} (\code{$PDAsyEst}, or \code{$FDAsyEst}) for showing asymptotic diversity estimates along with related statistics: 
@@ -346,8 +362,8 @@ NULL
 #'    \item{TD_asy, PD_asy, FD_asy}{the asymptotic diversity estimate.}
 #'    \item{s.e.}{standard error of asymptotic diversity.}
 #'    \item{qTD.LCL, qPD.LCL, qFD.LCL and qTD.UCL, qPD.UCL, qFD.UCL}{the bootstrap lower and upper confidence limits for asymptotic diversity at the specified level (with a default value of 0.95).}
-#'    \item{Reftime}{the reference times for PD.}
-#'    \item{Type}{\code{"PD"} (effective total branch length) or \code{"meanPD"} (effective number of equally divergent lineages) for PD.}
+#'    \item{Reftime}{the reference times for PD when \code{PDtype = "PD"} or \code{PDtype = "meanPD"}.}
+#'    \item{Type}{\code{"PD"} (effective total branch length), \code{"meanPD"} (effective number of equally divergent lineages), or \code{"AUC"} (integrated mean phylogenetic diversity).}
 #'    \item{Tau}{the threshold of functional distinctiveness between any two species for FD (under \code{FDtype = tau_values}).}
 #' 
 #' 
@@ -410,7 +426,23 @@ NULL
 #' 
 #' @export
 iNEXT3D <- function(data, diversity = 'TD', q = c(0,1,2), datatype = "abundance", size = NULL, endpoint = NULL, knots = 40, nboot = 50, conf = 0.95, nT = NULL, 
-                    PDtree = NULL, PDreftime = NULL, PDtype = 'meanPD', FDdistM, FDtype = 'AUC', FDtau = NULL, FDcut_number = 50) {
+                    PDtree = NULL, PDreftime = NULL, PDtype = 'AUC', FDdistM, FDtype = 'AUC', FDtau = NULL, FDcut_number = 50, PDcut_number = 30) {
+  if (diversity == 'PD' && identical(PDtype, 'AUC')) {
+    st <- PD_AUC_setup(data, datatype, nT, PDtree, PDreftime, PDcut_number)
+    sz <- check.size(st$data, st$datatype, size, endpoint, knots)
+    a <- PD_AUC_engine(st, q, nboot, conf, sizes=sz, bridge=TRUE)
+    b <- PD_AUC_engine(st, c(0,1,2), nboot, conf, methods=c('Observed','Asymptotic'))$profile
+    obs <- b[b$Method=='Observed',]; est <- b[b$Method=='Asymptotic',]
+    ix <- data.frame(Assemblage=est$Assemblage,qPD=paste0('q = ',est$Order.q,' PD(AUC)'),
+      PD_obs=obs$qPD,PD_asy=est$qPD,s.e.=est$s.e.,qPD.LCL=est$qPD.LCL,qPD.UCL=est$qPD.UCL,
+      Type='AUC')
+    a$size_based <- a$size_based[,!names(a$size_based) %in% c('s.e.','SC.s.e.','Reftime'),drop=FALSE]
+    a$coverage_based <- a$coverage_based[,!names(a$coverage_based) %in% c('s.e.','Reftime'),drop=FALSE]
+    info <- DataInfo3D(data, diversity='PD', datatype=datatype, nT=nT, PDtree=PDtree,
+                       PDtype='AUC')
+    return(structure(list(PDInfo=info,PDiNextEst=a,PDAsyEst=ix),class='iNEXT3D'))
+  }
+
   
   if ( !(diversity %in% c('TD', 'PD', 'FD')) ) 
     stop("Please select one of below diversity: 'TD', 'PD', 'FD'", call. = FALSE)
@@ -544,7 +576,7 @@ iNEXT3D <- function(data, diversity = 'TD', q = c(0,1,2), datatype = "abundance"
     index$Reftime = PDreftime
     index$Type = PDtype
     
-    info <- DataInfo3D(data, diversity = 'PD', datatype = datatype, nT, PDtree = PDtree, PDreftime = PDreftime)
+    info <- DataInfo3D(data, diversity = 'PD', datatype = datatype, nT, PDtree = PDtree, PDreftime = PDreftime, PDtype = PDtype)
     
     
     out = list("PDInfo"=info, "PDiNextEst"=out, "PDAsyEst"=index)
@@ -792,7 +824,7 @@ ggiNEXT3D = function(output, type = 1:3, facet.var = "Assemblage", color.var = "
     
   } else if (sum(names(output) %in% c('PDInfo', 'PDiNextEst', 'PDAsyEst')) == 3) {
     
-    class = 'PD'
+    class = if (all(output$PDiNextEst$size_based$Type == 'AUC')) 'PD(AUC)' else 'PD'
     plottable = output$PDiNextEst
     plottable$size_based = rename(plottable$size_based, c('qD' = 'qPD', 'qD.LCL' = 'qPD.LCL', 'qD.UCL' = 'qPD.UCL'))
     plottable$coverage_based = rename(plottable$coverage_based, c('qD' = 'qPD', 'qD.LCL' = 'qPD.LCL', 'qD.UCL' = 'qPD.UCL'))
@@ -851,6 +883,8 @@ type_plot = function(x_list, type, class, datatype, facet.var, color.var) {
     
     ylab_name = "Functional diversity (AUC)"
     
+  } else if (class == 'PD(AUC)') {
+    ylab_name = 'Phylogenetic diversity (AUC)'
   } else if (class == 'PD' & unique(x_list$size_based$Type) == 'PD') {
     
     ylab_name = "Phylogenetic diversity"
@@ -1095,8 +1129,9 @@ type_plot = function(x_list, type, class, datatype, facet.var, color.var) {
 #' @param conf a positive number < 1 specifying the level of confidence interval. Default is 0.95.
 #' @param nT (required only when \code{datatype = "incidence_raw"} and input data in a single matrix/data.frame) a vector of positive integers specifying the number of sampling units in each assemblage. If assemblage names are not specified (i.e., \code{names(nT) = NULL}), then assemblages are automatically named as "assemblage1", "assemblage2",..., etc. 
 #' @param PDtree (required argument for \code{diversity = "PD"}), a phylogenetic tree in Newick format for all observed species in the pooled assemblage. 
-#' @param PDreftime (argument only for \code{diversity = "PD"}), a vector of numerical values specifying reference times for PD. Default is \code{NULL} (i.e., the age of the root of \code{PDtree}).  
-#' @param PDtype (argument only for \code{diversity = "PD"}), select PD type: \code{PDtype = "PD"} (effective total branch length) or \code{PDtype = "meanPD"} (effective number of equally divergent lineages). Default is \code{"meanPD"}, where \code{meanPD = PD/tree depth}.
+#' @param PDreftime (argument only for \code{diversity = "PD"}), a vector of numerical values specifying reference times for PD or meanPD (ignored for AUC). Default is \code{NULL} (i.e., the age of the root of \code{PDtree}).  
+#' @param PDtype (argument only for \code{diversity = "PD"}), select PD type: \code{PDtype = "PD"} (effective total branch length) or \code{PDtype = "meanPD"} (effective number of equally divergent lineages). Here \code{meanPD = PD/Reftime}. Default is \code{"AUC"}. Use \code{PDtype = 'AUC'} for the normalized integral of mean-PD from 0.0001 to the pooled tree height (approximating the interval from zero to the root age).
+#' @param PDcut_number For PDtype = 'AUC', number of equally spaced trapezoidal integration points (default 30; minimum 3).
 #' @param FDdistM (required argument for \code{diversity = "FD"}), a species pairwise distance matrix for all species in the pooled assemblage. 
 #' @param FDtype (argument only for \code{diversity = "FD"}), select FD type: \code{FDtype = "tau_values"} for FD under specified threshold values, or \code{FDtype = "AUC"} (area under the curve of tau-profile) for an overall FD which integrates all threshold values between zero and one. Default is \code{"AUC"}.  
 #' @param FDtau (argument only for \code{diversity = "FD"} and \code{FDtype = "tau_values"}), a numerical vector between 0 and 1 specifying tau values (threshold levels). If \code{NULL} (default), then threshold is set to be the mean distance between any two individuals randomly selected from the pooled assemblage (i.e., quadratic entropy). 
@@ -1111,7 +1146,7 @@ type_plot = function(x_list, type, class, datatype, facet.var, color.var) {
 #' \item{Method}{Rarefaction, Observed, or Extrapolation, depending on whether the target coverage is less than, equal to, or greater than the coverage of the reference sample.}
 #' \item{s.e.}{standard error of diversity estimate.}
 #' \item{qTD.LCL, qPD.LCL, qFD.LCL and qTD.UCL, qPD.UCL, qFD.UCL}{the bootstrap lower and upper confidence limits for the diversity of order q at the specified level (with a default value of 0.95).}
-#' \item{Reftime}{the reference times for PD.}
+#' \item{Reftime}{the reference times for PD when \code{PDtype = "PD"} or \code{PDtype = "meanPD"}.}
 #' \item{Type}{\code{"PD"} (effective total branch length) or \code{"meanPD"} (effective number of equally divergent lineages) for PD.}
 #' \item{Tau}{the threshold of functional distinctiveness between any two species for FD (under \code{FDtype = tau_values}).}
 #' Similar output is obtained for \code{base = "size"}. \cr\cr
@@ -1179,7 +1214,19 @@ type_plot = function(x_list, type, class, datatype, facet.var, color.var) {
 #' 
 #' @export
 estimate3D <- function(data, diversity = 'TD', q = c(0,1,2), datatype = "abundance", base = "coverage", level = NULL, nboot = 50, conf = 0.95, nT = NULL, 
-                       PDtree, PDreftime = NULL, PDtype = 'meanPD', FDdistM, FDtype = 'AUC', FDtau = NULL, FDcut_number = 50) {
+                       PDtree, PDreftime = NULL, PDtype = 'AUC', FDdistM, FDtype = 'AUC', FDtau = NULL, FDcut_number = 50, PDcut_number = 30) {
+  if (diversity == 'PD' && identical(PDtype, 'AUC')) {
+    st <- PD_AUC_setup(data, datatype, nT, PDtree, PDreftime, PDcut_number)
+    base <- check.base(base)
+    level <- check.level(st$data, st$datatype, base, level)
+    if (base == 'size') {
+      a <- PD_AUC_engine(st,q,nboot,conf,sizes=lapply(st$data,function(x) level))$size_based
+      a <- a[,c('Assemblage','Order.q',if(st$datatype=='abundance') 'm' else 'mT','Method','SC','qPD','s.e.','qPD.LCL','qPD.UCL','Reftime','Type')]
+    } else a <- PD_AUC_engine(st,q,nboot,conf,levels=level)$coverage_based
+    a$Reftime <- NULL
+    return(a)
+  }
+
   
   if ( !(diversity %in% c('TD', 'PD', 'FD')) ) 
     stop("Please select one of below diversity: 'TD', 'PD', 'FD'", call. = FALSE)
@@ -1354,8 +1401,9 @@ estimate3D <- function(data, diversity = 'TD', q = c(0,1,2), datatype = "abundan
 #' @param nT (required only when \code{datatype = "incidence_raw"} and input data in a single matrix/data.frame) a vector of positive integers specifying the number of sampling units in each assemblage. If assemblage names are not specified (i.e., \code{names(nT) = NULL}), then assemblages are automatically named as "assemblage1", "assemblage2",..., etc. 
 #' @param method Select \code{'Asymptotic'} or \code{'Observed'}.
 #' @param PDtree (required argument for \code{diversity = "PD"}), a phylogenetic tree in Newick format for all observed species in the pooled assemblage. 
-#' @param PDreftime (argument only for \code{diversity = "PD"}), a vector of numerical values specifying reference times for PD. Default is \code{NULL} (i.e., the age of the root of \code{PDtree}).  
-#' @param PDtype (argument only for \code{diversity = "PD"}), select PD type: \code{PDtype = "PD"} (effective total branch length) or \code{PDtype = "meanPD"} (effective number of equally divergent lineages). Default is \code{"meanPD"}, where \code{meanPD = PD/tree depth}.
+#' @param PDreftime (argument only for \code{diversity = "PD"}), a vector of numerical values specifying reference times for PD or meanPD (ignored for AUC). Default is \code{NULL} (i.e., the age of the root of \code{PDtree}).  
+#' @param PDtype (argument only for \code{diversity = "PD"}), select PD type: \code{PDtype = "PD"} (effective total branch length) or \code{PDtype = "meanPD"} (effective number of equally divergent lineages). Here \code{meanPD = PD/Reftime}. Default is \code{"AUC"}. Use \code{PDtype = 'AUC'} for the normalized integral of mean-PD from 0.0001 to the pooled tree height (approximating the interval from zero to the root age).
+#' @param PDcut_number For PDtype = 'AUC', number of equally spaced trapezoidal integration points (default 30; minimum 3).
 #' @param FDdistM (required argument for \code{diversity = "FD"}), a species pairwise distance matrix for all species in the pooled assemblage. 
 #' @param FDtype (argument only for \code{diversity = "FD"}), select FD type: \code{FDtype = "tau_values"} for FD under specified threshold values, or \code{FDtype = "AUC"} (area under the curve of tau-profile) for an overall FD which integrates all threshold values between zero and one. Default is \code{"AUC"}.  
 #' @param FDtau (argument only for \code{diversity = "FD"} and \code{FDtype = "tau_values"}), a numerical vector between 0 and 1 specifying tau values (threshold levels). If \code{NULL} (default), then threshold is set to be the mean distance between any two individuals randomly selected from the pooled assemblage (i.e., quadratic entropy). 
@@ -1368,7 +1416,7 @@ estimate3D <- function(data, diversity = 'TD', q = c(0,1,2), datatype = "abundan
 #' \item{s.e.}{standard error of diversity.}
 #' \item{qTD.LCL, qPD.LCL, qFD.LCL and qTD.UCL, qPD.UCL, qFD.UCL}{the bootstrap lower and upper confidence limits for the diversity of order q at the specified level (with a default value of 0.95).}
 #' \item{Method}{\code{"Asymptotic"} means asymptotic diversity and \code{"Observed"} means observed diversity.}
-#' \item{Reftime}{the reference times for PD.}
+#' \item{Reftime}{the reference times for PD when \code{PDtype = "PD"} or \code{PDtype = "meanPD"}.}
 #' \item{Type}{\code{"PD"} (effective total branch length) or \code{"meanPD"} (effective number of equally divergent lineages) for PD.}
 #' \item{Tau}{the threshold of functional distinctiveness between any two species for FD (under \code{FDtype = tau_values}).}
 #' 
@@ -1390,7 +1438,7 @@ estimate3D <- function(data, diversity = 'TD', q = c(0,1,2), datatype = "abundan
 #' data <- Brazil_rainforest_abun_data
 #' tree <- Brazil_rainforest_phylo_tree
 #' output_ObsAsy_PD_abun <- ObsAsy3D(data, diversity = 'PD', q = c(0, 1, 2), 
-#'                                   PDreftime = seq(0.01, 400, length.out = 20),
+#'                                   PDtype = "meanPD", PDreftime = seq(0.01, 400, length.out = 20),
 #'                                   datatype = "abundance", nboot = 20, PDtree = tree)
 #' output_ObsAsy_PD_abun
 #' 
@@ -1454,7 +1502,16 @@ estimate3D <- function(data, diversity = 'TD', q = c(0,1,2), datatype = "abundan
 #' 
 #' @export
 ObsAsy3D <- function(data, diversity = 'TD', q = seq(0, 2, 0.2), datatype = "abundance", nboot = 50, conf = 0.95, nT = NULL, method = c('Asymptotic', 'Observed'),
-                     PDtree, PDreftime = NULL, PDtype = 'meanPD', FDdistM, FDtype = 'AUC', FDtau = NULL, FDcut_number = 50) {
+                     PDtree, PDreftime = NULL, PDtype = 'AUC', FDdistM, FDtype = 'AUC', FDtau = NULL, FDcut_number = 50, PDcut_number = 30) {
+  if (diversity == 'PD' && identical(PDtype, 'AUC')) {
+    if (!length(method) || !all(method %in% c('Observed','Asymptotic'))) stop('Invalid method.')
+    st <- PD_AUC_setup(data,datatype,nT,PDtree,PDreftime,PDcut_number,
+                       empirical=!('Asymptotic' %in% method))
+    a <- PD_AUC_engine(st,q,nboot,conf,methods=unique(method))$profile
+    a$Reftime <- NULL
+    return(a)
+  }
+
   
   if ( !(diversity %in% c('TD', 'PD', 'FD')) ) 
     stop("Please select one of below diversity: 'TD', 'PD', 'FD'", call. = FALSE)
@@ -1626,7 +1683,7 @@ ObsAsy3D <- function(data, diversity = 'TD', q = seq(0, 2, 0.2), datatype = "abu
 #' data <- Brazil_rainforest_abun_data
 #' tree <- Brazil_rainforest_phylo_tree
 #' output_ObsAsy_PD_abun <- ObsAsy3D(data, diversity = 'PD', q = c(0, 1, 2), 
-#'                                   PDreftime = seq(0.01, 400, length.out = 20),
+#'                                   PDtype = "meanPD", PDreftime = seq(0.01, 400, length.out = 20),
 #'                                   datatype = "abundance", nboot = 20, PDtree = tree)
 #' ggObsAsy3D(output_ObsAsy_PD_abun, profile = "time")
 #' 
@@ -1703,7 +1760,8 @@ ggObsAsy3D <- function(output, profile = 'q'){
     
   } else if (sum(colnames(output)[1:7] == c('Assemblage', 'Order.q', 'qPD', 's.e.', 'qPD.LCL', 'qPD.UCL', 'Method')) == 7) {
     
-    class = 'PD'
+    class = if (all(output$Type == 'AUC')) 'PD(AUC)' else 'PD'
+    if (class == 'PD(AUC)' && profile != 'q') stop('PD AUC supports only q-profile.')
     
   } else if (sum(colnames(output)[1:7] == c('Assemblage', 'Order.q', 'qFD', 's.e.', 'qFD.LCL', 'qFD.UCL', 'Method')) == 7) {
     
@@ -1826,6 +1884,23 @@ ggObsAsy3D <- function(output, profile = 'q'){
   }
   
   ## AUC & q-profile ##
+  if (class == 'PD(AUC)') {
+    
+    out = ggplot(output, aes(x = Order.q, y = qPD, colour = Assemblage, fill = Assemblage))
+    
+    if (length(unique(output$Method)) == 1) {
+      out = out + geom_line(size = 1.5) + geom_ribbon(aes(ymin = qPD.LCL, ymax = qPD.UCL, fill = Assemblage), linetype = 0, alpha = 0.2)
+      
+      if (unique(output$Method) == 'Asymptotic') out = out + labs(x = 'Order q', y = 'Asymptotic Phylogenetic diversity (AUC)')
+      if (unique(output$Method) == 'Observed') out = out + labs(x = 'Order q', y = 'Observed Phylogenetic diversity (AUC)')
+    } else {
+      out = out + geom_line(aes(lty = Method), size = 1.5) + 
+        geom_ribbon(data = output %>% filter(Method=="Asymptotic"), aes(ymin = qPD.LCL, ymax = qPD.UCL), linetype = 0, alpha = 0.2)
+      
+      out = out + labs(x = 'Order q', y = 'Phylogenetic diversity (AUC)')
+    }
+  }
+  
   if (class == 'FD(AUC)') {
     
     out = ggplot(output, aes(x = Order.q, y = qFD, colour = Assemblage, fill = Assemblage))
